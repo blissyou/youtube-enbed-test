@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YouTube 시청 분석 대시보드</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React & ReactDOM CDN -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <!-- Babel for JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+        body { background-color: #09090b; color: #fafafa; }
+        .terminal-scroll::-webkit-scrollbar { width: 6px; }
+        .terminal-scroll::-webkit-scrollbar-track { background: #18181b; }
+        .terminal-scroll::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 3px; }
+    </style>
+</head>
+<body class="min-h-screen">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useCallback } = React;
+
+        const YoutubeTracker = () => {
+            const [url, setUrl] = useState('https://www.youtube.com/watch?v=aqz-KE-bpKQ');
+            const [videoId, setVideoId] = useState('aqz-KE-bpKQ');
+            const [player, setPlayer] = useState(null);
+            const [logs, setLogs] = useState([]);
+            const [currentTime, setCurrentTime] = useState(0);
+            const [duration, setDuration] = useState(0);
+            const [isPlaying, setIsPlaying] = useState(false);
+            const [status, setStatus] = useState('대기 중');
+            const [progress, setProgress] = useState(0);
+
+            const playerRef = useRef(null); // 플레이어 인스턴스 저장용 Ref
+            const intervalRef = useRef(null);
+            const logContainerRef = useRef(null);
+
+            // 로그 추가 함수
+            const addLog = useCallback((message, time = null) => {
+                const timestamp = new Date().toLocaleTimeString('ko-KR', { hour12: false });
+                const videoPos = time !== null ? time.toFixed(2) : (playerRef.current && playerRef.current.getCurrentTime ? playerRef.current.getCurrentTime().toFixed(2) : '0.00');
+                
+                setLogs(prev => [
+                    { id: Date.now(), timestamp, message, pos: videoPos },
+                    ...prev.slice(0, 99)
+                ]);
+            }, []);
+
+            // 시간 포맷팅 (mm:ss)
+            const formatTime = (seconds) => {
+                if (!seconds || isNaN(seconds)) return "0:00";
+                const m = Math.floor(seconds / 60);
+                const s = Math.floor(seconds % 60);
+                return `${m}:${s.toString().padStart(2, '0')}`;
+            };
+
+            // 유튜브 API 초기화
+            useEffect(() => {
+                // 이미 API가 로드되어 있는지 확인
+                if (window.YT && window.YT.Player) {
+                    initPlayer(videoId);
+                } else {
+                    const tag = document.createElement('script');
+                    tag.src = "https://www.youtube.com/iframe_api";
+                    const firstScriptTag = document.getElementsByTagName('script')[0];
+                    firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
+
+                    window.onYouTubeIframeAPIReady = () => {
+                        initPlayer(videoId);
+                    };
+                }
+
+                return () => {
+                    if (intervalRef.current) clearInterval(intervalRef.current);
+                };
+            }, []);
+
+            const initPlayer = (id) => {
+                if (playerRef.current) {
+                    playerRef.current.destroy();
+                }
+
+                const origin = window.location.origin === "null" ? "*" : window.location.origin;
+
+                playerRef.current = new window.YT.Player('player', {
+                    height: '100%',
+                    width: '100%',
+                    videoId: id,
+                    playerVars: {
+                        'autoplay': 0,
+                        'controls': 1,
+                        'enablejsapi': 1,
+                        'origin': origin,
+                        'rel': 0,
+                        'modestbranding': 1
+                    },
+                    events: {
+                        'onReady': (event) => {
+                            setDuration(event.target.getDuration());
+                            addLog('시스템: 플레이어 준비 완료');
+                        },
+                        'onStateChange': (event) => {
+                            handleStateChange(event.data);
+                        }
+                    }
+                });
+                setPlayer(playerRef.current);
+            };
+
+            const handleStateChange = (state) => {
+                let statusText = '';
+                switch (state) {
+                    case window.YT.PlayerState.PLAYING:
+                        statusText = '재생 중';
+                        setIsPlaying(true);
+                        startTracking();
+                        break;
+                    case window.YT.PlayerState.PAUSED:
+                        statusText = '일시 중지';
+                        setIsPlaying(false);
+                        stopTracking();
+                        break;
+                    case window.YT.PlayerState.BUFFERING:
+                        statusText = '버퍼링 중';
+                        break;
+                    case window.YT.PlayerState.ENDED:
+                        statusText = '종료됨';
+                        setIsPlaying(false);
+                        stopTracking();
+                        break;
+                    default:
+                        statusText = '대기 중';
+                }
+                setStatus(statusText);
+                addLog(`상태 변경: ${statusText}`);
+            };
+
+            const startTracking = () => {
+                if (intervalRef.current) clearInterval(intervalRef.current);
+                intervalRef.current = setInterval(() => {
+                    const p = playerRef.current;
+                    if (p && typeof p.getCurrentTime === 'function') {
+                        const cur = p.getCurrentTime();
+                        const dur = p.getDuration();
+                        setCurrentTime(cur);
+                        setDuration(dur);
+                        if (dur > 0) {
+                            setProgress((cur / dur) * 100);
+                        }
+                    }
+                }, 100);
+            };
+
+            const stopTracking = () => {
+                if (intervalRef.current) clearInterval(intervalRef.current);
+            };
+
+            const extractVideoId = (input) => {
+                const regex = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/;
+                const match = input.match(regex);
+                if (match && match[1]) return match[1];
+                if (input.length === 11) return input;
+                return null;
+            };
+
+            const handleLoadVideo = () => {
+                const id = extractVideoId(url);
+                if (id) {
+                    setVideoId(id);
+                    if (player) {
+                        player.loadVideoById(id);
+                        addLog(`비디오 교체: ${id}`);
+                    } else {
+                        initPlayer(id);
+                    }
+                } else {
+                    alert('유효한 유튜브 URL 또는 ID를 입력하세요.');
+                }
+            };
+
+            return (
+                <div className="flex flex-col h-screen p-4 md:p-6 lg:p-8 space-y-6 max-w-7xl mx-auto">
+                    {/* Header & Input Area */}
+                    <header className="flex flex-col md:flex-row items-center justify-between gap-4 border-b border-zinc-800 pb-6">
+                        <div className="flex items-center space-x-3">
+                            <div className="w-10 h-10 bg-red-600 rounded-lg flex items-center justify-center">
+                                <svg viewBox="0 0 24 24" className="w-6 h-6 fill-white">
+                                    <path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/>
+                                </svg>
+                            </div>
+                            <h1 className="text-2xl font-bold tracking-tight text-zinc-100">Live Tracker</h1>
+                        </div>
+                        
+                        <div className="flex w-full md:w-auto bg-zinc-900 border border-zinc-800 rounded-xl p-1 shadow-2xl">
+                            <input 
+                                type="text" 
+                                value={url}
+                                onChange={(e) => setUrl(e.target.value)}
+                                placeholder="유튜브 URL 또는 비디오 ID 입력"
+                                className="bg-transparent px-4 py-2 w-full md:w-80 lg:w-96 text-zinc-300 focus:outline-none placeholder-zinc-600"
+                            />
+                            <button 
+                                onClick={handleLoadVideo}
+                                className="bg-zinc-100 text-zinc-950 px-6 py-2 rounded-lg font-semibold hover:bg-white transition-colors flex items-center gap-2"
+                            >
+                                <span>불러오기</span>
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M14 5l7 7m0 0l-7 7m7-7H3"/>
+                                </svg>
+                            </button>
+                        </div>
+                    </header>
+
+                    {/* Main Content */}
+                    <main className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-6 min-h-0">
+                        {/* Left: Player & Stats */}
+                        <div className="lg:col-span-8 flex flex-col space-y-4">
+                            {/* Video Container */}
+                            <div className="relative aspect-video bg-black rounded-2xl overflow-hidden border border-zinc-800 shadow-2xl">
+                                <div id="player"></div>
+                            </div>
+
+                            {/* Status Card */}
+                            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                                <div className="bg-zinc-900 border border-zinc-800 p-4 rounded-2xl">
+                                    <span className="text-xs text-zinc-500 uppercase font-bold tracking-widest">상태</span>
+                                    <div className="flex items-center mt-1">
+                                        <div className={`w-2 h-2 rounded-full mr-2 ${isPlaying ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`}></div>
+                                        <p className="text-xl font-medium text-zinc-100">{status}</p>
+                                    </div>
+                                </div>
+                                <div className="bg-zinc-900 border border-zinc-800 p-4 rounded-2xl">
+                                    <span className="text-xs text-zinc-500 uppercase font-bold tracking-widest">현재 위치</span>
+                                    <p className="text-xl font-medium text-zinc-100 mt-1 font-mono tracking-tighter">
+                                        {formatTime(currentTime)}
+                                    </p>
+                                </div>
+                                <div className="bg-zinc-900 border border-zinc-800 p-4 rounded-2xl">
+                                    <span className="text-xs text-zinc-500 uppercase font-bold tracking-widest">전체 길이</span>
+                                    <p className="text-xl font-medium text-zinc-100 mt-1 font-mono tracking-tighter">
+                                        {formatTime(duration)}
+                                    </p>
+                                </div>
+                                <div className="bg-zinc-900 border border-zinc-800 p-4 rounded-2xl">
+                                    <span className="text-xs text-zinc-500 uppercase font-bold tracking-widest">진행률</span>
+                                    <p className="text-xl font-medium text-zinc-100 mt-1">{progress.toFixed(1)}%</p>
+                                </div>
+                            </div>
+
+                            {/* Progress Bar */}
+                            <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-2xl space-y-3">
+                                <div className="flex justify-between text-xs text-zinc-500 font-bold uppercase tracking-widest">
+                                    <span>Playback Progress</span>
+                                    <span>{formatTime(currentTime)} / {formatTime(duration)}</span>
+                                </div>
+                                <div className="w-full bg-zinc-800 rounded-full h-3 overflow-hidden border border-zinc-700 p-[1px]">
+                                    <div 
+                                        className="bg-zinc-100 h-full rounded-full transition-all duration-100 ease-linear shadow-[0_0_12px_rgba(255,255,255,0.3)]"
+                                        style={{ width: `${progress}%` }}
+                                    ></div>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Right: Event Feed */}
+                        <div className="lg:col-span-4 flex flex-col min-h-[400px] lg:min-h-0 bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden shadow-2xl">
+                            <div className="p-4 border-b border-zinc-800 bg-zinc-900/50 backdrop-blur flex justify-between items-center">
+                                <div className="flex items-center space-x-2">
+                                    <div className="w-3 h-3 rounded-full bg-zinc-700"></div>
+                                    <h3 className="font-bold text-sm uppercase tracking-widest text-zinc-400">Live Event Feed</h3>
+                                </div>
+                                <button 
+                                    onClick={() => setLogs([])}
+                                    className="text-[10px] bg-zinc-800 hover:bg-zinc-700 text-zinc-400 px-2 py-1 rounded transition-colors uppercase font-bold"
+                                >
+                                    Clear
+                                </button>
+                            </div>
+                            
+                            <div className="flex-1 overflow-y-auto terminal-scroll p-4 font-mono text-sm space-y-3">
+                                {logs.length === 0 ? (
+                                    <div className="text-zinc-600 flex flex-col items-center justify-center h-full space-y-2 opacity-50">
+                                        <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                                        </svg>
+                                        <span>로그가 없습니다</span>
+                                    </div>
+                                ) : (
+                                    logs.map(log => (
+                                        <div key={log.id} className="border-l-2 border-zinc-700 pl-3 py-1 group hover:bg-zinc-800/50 rounded-r transition-all">
+                                            <div className="flex justify-between items-start">
+                                                <span className="text-zinc-500 text-xs">[{log.timestamp}]</span>
+                                                <span className="text-zinc-400 text-xs bg-zinc-800 px-1.5 rounded font-bold">{log.pos}s</span>
+                                            </div>
+                                            <p className="text-zinc-200 mt-1 leading-relaxed">{log.message}</p>
+                                        </div>
+                                    ))
+                                )}
+                            </div>
+                        </div>
+                    </main>
+
+                    {/* Footer */}
+                    <footer className="text-center py-4 text-zinc-600 text-xs font-medium uppercase tracking-widest">
+                        YouTube Realtime Tracker © 2026 • Build with React & Tailwind
+                    </footer>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<YoutubeTracker />);
+    </script>
+</body>
+</html>
