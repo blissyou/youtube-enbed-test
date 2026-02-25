@@ -118,12 +118,10 @@
                     case window.YT.PlayerState.PLAYING:
                         statusText = '재생 중';
                         setIsPlaying(true);
-                        startTracking();
                         break;
                     case window.YT.PlayerState.PAUSED:
                         statusText = '일시 중지';
                         setIsPlaying(false);
-                        // 잠금 상태에서 일시 중지된 경우에도 위치 추적은 유지
                         break;
                     case window.YT.PlayerState.BUFFERING:
                         statusText = '버퍼링 중';
@@ -131,7 +129,6 @@
                     case window.YT.PlayerState.ENDED:
                         statusText = '종료됨';
                         setIsPlaying(false);
-                        stopTracking();
                         break;
                     default:
                         statusText = '대기 중';
@@ -140,25 +137,33 @@
                 addLog(`상태 변경: ${statusText}`);
             };
 
-            const startTracking = () => {
-                if (intervalRef.current) clearInterval(intervalRef.current);
-                intervalRef.current = setInterval(() => {
+            // 통합 트래킹 및 잠금 로직 (API 초기화 시 한 번만 실행)
+            useEffect(() => {
+                const interval = setInterval(() => {
                     const p = playerRef.current;
-                    if (p && typeof p.getCurrentTime === 'function') {
+                    if (p && typeof p.getCurrentTime === 'function' && p.getPlayerState() !== -1) {
                         const cur = p.getCurrentTime();
                         const dur = p.getDuration();
                         
-                        // 타임라인 잠금 로직
+                        // 타임라인 잠금 핵심 로직
                         if (isLocked && !isSeekingRef.current) {
-                            // 현재 위치와 마지막 기록 위치의 차이 계산 (임계값 2초)
+                            // 1.5초 이상의 급격한 시간 변화 감지 (사용자 조작)
                             const diff = Math.abs(cur - lastTimeRef.current);
-                            if (diff > 2) {
-                                p.seekTo(lastTimeRef.current);
-                                addLog(`조작 감지: 강제 복귀 (${formatTime(lastTimeRef.current)})`);
+                            
+                            // 재생 중 자연스러운 시간 흐름(약 0.1~0.3초)을 벗어난 경우
+                            if (diff > 1.5) {
+                                p.seekTo(lastTimeRef.current, true);
+                                // 로그가 너무 많이 쌓이지 않게 1초에 한 번만 기록
+                                if (!window._lastLogTime || Date.now() - window._lastLogTime > 1000) {
+                                    addLog(`타임라인 고정: ${formatTime(lastTimeRef.current)} (조작 차단됨)`);
+                                    window._lastLogTime = Date.now();
+                                }
                             } else {
+                                // 정상적인 재생인 경우에만 마지막 위치 업데이트
                                 lastTimeRef.current = cur;
                             }
                         } else {
+                            // 잠금이 아닐 때는 항상 현재 위치 추적
                             lastTimeRef.current = cur;
                         }
 
@@ -168,12 +173,10 @@
                             setProgress((cur / dur) * 100);
                         }
                     }
-                }, 500); // 0.5초 주기로 체크 (너무 자주 하면 성능 저하, 너무 늦으면 조작 폭이 커짐)
-            };
+                }, 100); // 100ms (0.1초) 주기로 매우 정밀하게 감시
 
-            const stopTracking = () => {
-                // 트래킹을 완전히 멈추지 않고 위치 업데이트만 정지 (잠금 체크를 위해)
-            };
+                return () => clearInterval(interval);
+            }, [isLocked]); // isLocked 상태가 변할 때마다 로직 갱신
 
             const extractVideoId = (input) => {
                 const regex = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/;
