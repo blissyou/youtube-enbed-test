@@ -145,21 +145,17 @@
                         const cur = p.getCurrentTime();
                         const dur = p.getDuration();
                         
-                        // 타임라인 잠금 핵심 로직
+                        // 타임라인 잠금 핵심 로직 (앞으로 가기만 차단)
                         if (isLocked && !isSeekingRef.current) {
-                            // 1.5초 이상의 급격한 시간 변화 감지 (사용자 조작)
-                            const diff = Math.abs(cur - lastTimeRef.current);
-                            
-                            // 재생 중 자연스러운 시간 흐름(약 0.1~0.3초)을 벗어난 경우
-                            if (diff > 1.5) {
+                            // 현재 위치보다 1.5초 이상 앞서가는 경우(전진 점프)만 차단
+                            if (cur > lastTimeRef.current + 1.5) {
                                 p.seekTo(lastTimeRef.current, true);
-                                // 로그가 너무 많이 쌓이지 않게 1초에 한 번만 기록
                                 if (!window._lastLogTime || Date.now() - window._lastLogTime > 1000) {
-                                    addLog(`타임라인 고정: ${formatTime(lastTimeRef.current)} (조작 차단됨)`);
+                                    addLog(`전진 차단: ${formatTime(lastTimeRef.current)} (뒤로 가기는 가능)`);
                                     window._lastLogTime = Date.now();
                                 }
                             } else {
-                                // 정상적인 재생인 경우에만 마지막 위치 업데이트
+                                // 뒤로 가거나 정상 재생 중인 경우 위치 업데이트 (뒤로 가기 허용)
                                 lastTimeRef.current = cur;
                             }
                         } else {
@@ -173,10 +169,10 @@
                             setProgress((cur / dur) * 100);
                         }
                     }
-                }, 100); // 100ms (0.1초) 주기로 매우 정밀하게 감시
+                }, 100);
 
                 return () => clearInterval(interval);
-            }, [isLocked]); // isLocked 상태가 변할 때마다 로직 갱신
+            }, [isLocked]); 
 
             const extractVideoId = (input) => {
                 const regex = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/;
@@ -211,12 +207,18 @@
             };
 
             const handleSeek = (e) => {
-                if (isLocked || !player) return;
-                isSeekingRef.current = true;
                 const rect = e.currentTarget.getBoundingClientRect();
                 const x = e.clientX - rect.left;
                 const pct = x / rect.width;
                 const seekTo = duration * pct;
+
+                // 커스텀 프로그레스 바에서도 전진 방지 적용
+                if (isLocked && seekTo > lastTimeRef.current + 1) {
+                    addLog(`전진 차단 (프로그레스 바)`);
+                    return;
+                }
+
+                isSeekingRef.current = true;
                 player.seekTo(seekTo);
                 lastTimeRef.current = seekTo;
                 addLog(`수동 이동: ${formatTime(seekTo)}`);
@@ -238,7 +240,7 @@
                         
                         <div className="flex flex-wrap items-center gap-4 w-full md:w-auto">
                             {/* Lock Toggle */}
-                            <div className={`flex items-center space-x-2 border rounded-xl px-4 py-2 shadow-2xl transition-colors ${isLocked ? 'bg-red-950/20 border-red-900/50' : 'bg-zinc-900 border-zinc-800'}`}>
+                            <div className={`flex items-center space-x-2 border rounded-xl px-4 py-2 shadow-2xl transition-colors ${isLocked ? 'bg-amber-950/20 border-amber-900/50' : 'bg-zinc-900 border-zinc-800'}`}>
                                 <input 
                                     type="checkbox" 
                                     id="lockTimeline"
@@ -248,12 +250,12 @@
                                         if (e.target.checked && player) {
                                             lastTimeRef.current = player.getCurrentTime();
                                         }
-                                        addLog(`타임라인 잠금: ${e.target.checked ? '활성화' : '비활성화'}`);
+                                        addLog(`전진 방지: ${e.target.checked ? '활성화' : '비활성화'}`);
                                     }}
-                                    className="w-4 h-4 rounded border-zinc-700 bg-zinc-800 text-red-600 focus:ring-red-500 focus:ring-offset-zinc-900 cursor-pointer"
+                                    className="w-4 h-4 rounded border-zinc-700 bg-zinc-800 text-amber-600 focus:ring-amber-500 focus:ring-offset-zinc-900 cursor-pointer"
                                 />
-                                <label htmlFor="lockTimeline" className={`text-sm font-bold cursor-pointer select-none ${isLocked ? 'text-red-400' : 'text-zinc-300'}`}>
-                                    {isLocked ? '타임라인 잠김' : '타임라인 잠금'}
+                                <label htmlFor="lockTimeline" className={`text-sm font-bold cursor-pointer select-none ${isLocked ? 'text-amber-400' : 'text-zinc-300'}`}>
+                                    {isLocked ? '전진 방지 활성화' : '전진 방지 (스킵 차단)'}
                                 </label>
                             </div>
 
