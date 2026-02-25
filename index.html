@@ -38,8 +38,8 @@
 
             const playerRef = useRef(null); 
             const intervalRef = useRef(null);
-            const lastTimeRef = useRef(0); // 마지막 정상 재생 위치 추적
-            const isSeekingRef = useRef(false); // 수동 이동 중인지 확인
+            const maxTimeRef = useRef(0); // 시청 완료한 최대 지점 (기준점)
+            const isSeekingRef = useRef(false);
 
             // 로그 추가 함수
             const addLog = useCallback((message, time = null) => {
@@ -137,7 +137,7 @@
                 addLog(`상태 변경: ${statusText}`);
             };
 
-            // 통합 트래킹 및 잠금 로직 (API 초기화 시 한 번만 실행)
+            // 통합 트래킹 및 잠금 로직
             useEffect(() => {
                 const interval = setInterval(() => {
                     const p = playerRef.current;
@@ -145,22 +145,24 @@
                         const cur = p.getCurrentTime();
                         const dur = p.getDuration();
                         
-                        // 타임라인 잠금 핵심 로직 (앞으로 가기만 차단)
+                        // 전진 방지 핵심 로직 (시청 완료 구간 내 이동은 허용)
                         if (isLocked && !isSeekingRef.current) {
-                            // 현재 위치보다 1.5초 이상 앞서가는 경우(전진 점프)만 차단
-                            if (cur > lastTimeRef.current + 1.5) {
-                                p.seekTo(lastTimeRef.current, true);
+                            // 현재 위치가 기록된 최대 시청 지점보다 1.5초 이상 앞서면 (미시청 구간 점프)
+                            if (cur > maxTimeRef.current + 1.5) {
+                                p.seekTo(maxTimeRef.current, true);
                                 if (!window._lastLogTime || Date.now() - window._lastLogTime > 1000) {
-                                    addLog(`전진 차단: ${formatTime(lastTimeRef.current)} (뒤로 가기는 가능)`);
+                                    addLog(`미시청 구간 차단: ${formatTime(maxTimeRef.current)}까지 시청함`);
                                     window._lastLogTime = Date.now();
                                 }
                             } else {
-                                // 뒤로 가거나 정상 재생 중인 경우 위치 업데이트 (뒤로 가기 허용)
-                                lastTimeRef.current = cur;
+                                // 정상 재생 중이거나 시청 완료 구간 내에서의 이동이면 maxTime 업데이트
+                                if (cur > maxTimeRef.current) {
+                                    maxTimeRef.current = cur;
+                                }
                             }
-                        } else {
-                            // 잠금이 아닐 때는 항상 현재 위치 추적
-                            lastTimeRef.current = cur;
+                        } else if (!isLocked) {
+                            // 잠금이 아닐 때는 항상 현재 위치를 최대 시점으로 업데이트
+                            maxTimeRef.current = cur;
                         }
 
                         setCurrentTime(cur);
@@ -186,6 +188,7 @@
                 const id = extractVideoId(url);
                 if (id) {
                     setVideoId(id);
+                    maxTimeRef.current = 0; // 새 비디오 로드 시 시청 기록 초기화
                     if (player) {
                         player.loadVideoById(id);
                         addLog(`비디오 교체: ${id}`);
@@ -212,16 +215,16 @@
                 const pct = x / rect.width;
                 const seekTo = duration * pct;
 
-                // 커스텀 프로그레스 바에서도 전진 방지 적용
-                if (isLocked && seekTo > lastTimeRef.current + 1) {
-                    addLog(`전진 차단 (프로그레스 바)`);
+                // 잠금 상태에서 미시청 구간(maxTime 이후)으로 가려고 하면 차단
+                if (isLocked && seekTo > maxTimeRef.current + 1) {
+                    addLog(`차단: 아직 보지 않은 구간입니다`);
                     return;
                 }
 
                 isSeekingRef.current = true;
                 player.seekTo(seekTo);
-                lastTimeRef.current = seekTo;
-                addLog(`수동 이동: ${formatTime(seekTo)}`);
+                // 뒤로 가는 경우 maxTime은 줄이지 않음 (이미 본 구간으로 유지)
+                addLog(`탐색 이동: ${formatTime(seekTo)}`);
                 setTimeout(() => { isSeekingRef.current = false; }, 500);
             };
 
@@ -248,14 +251,15 @@
                                     onChange={(e) => {
                                         setIsLocked(e.target.checked);
                                         if (e.target.checked && player) {
-                                            lastTimeRef.current = player.getCurrentTime();
+                                            // 잠금 활성화 시 현재 재생 시점을 최대 시청 지점으로 설정
+                                            maxTimeRef.current = Math.max(maxTimeRef.current, player.getCurrentTime());
                                         }
-                                        addLog(`전진 방지: ${e.target.checked ? '활성화' : '비활성화'}`);
+                                        addLog(`시청 구간 잠금: ${e.target.checked ? '활성화' : '비활성화'}`);
                                     }}
                                     className="w-4 h-4 rounded border-zinc-700 bg-zinc-800 text-amber-600 focus:ring-amber-500 focus:ring-offset-zinc-900 cursor-pointer"
                                 />
                                 <label htmlFor="lockTimeline" className={`text-sm font-bold cursor-pointer select-none ${isLocked ? 'text-amber-400' : 'text-zinc-300'}`}>
-                                    {isLocked ? '전진 방지 활성화' : '전진 방지 (스킵 차단)'}
+                                    {isLocked ? '미시청 구간 스킵 금지' : '전진 방지 활성화'}
                                 </label>
                             </div>
 
@@ -348,17 +352,28 @@
                             {/* Progress Bar */}
                             <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-2xl space-y-3">
                                 <div className="flex justify-between text-xs text-zinc-500 font-bold uppercase tracking-widest">
-                                    <span>Playback Progress {isLocked && <span className="text-red-500 ml-2">(LOCKED)</span>}</span>
+                                    <span>Playback Progress {isLocked && <span className="text-amber-500 ml-2">(SKIP LOCK ACTIVE)</span>}</span>
                                     <span>{formatTime(currentTime)} / {formatTime(duration)}</span>
                                 </div>
                                 <div 
-                                    className={`w-full bg-zinc-800 rounded-full h-4 overflow-hidden border border-zinc-700 p-[1px] relative ${isLocked ? 'cursor-not-allowed' : 'cursor-pointer hover:border-zinc-500'}`}
+                                    className={`w-full bg-zinc-800 rounded-full h-4 overflow-hidden border border-zinc-700 p-[1px] relative ${isLocked ? 'cursor-pointer hover:border-amber-900' : 'cursor-pointer hover:border-zinc-500'}`}
                                     onClick={handleSeek}
                                 >
+                                    {/* Watched Range (Max) */}
                                     <div 
-                                        className={`h-full rounded-full transition-all duration-100 ease-linear shadow-[0_0_12px_rgba(255,255,255,0.3)] ${isLocked ? 'bg-red-600/50' : 'bg-zinc-100'}`}
+                                        className="absolute top-0 left-0 h-full bg-zinc-700/50"
+                                        style={{ width: `${(maxTimeRef.current / duration) * 100}%` }}
+                                    ></div>
+                                    {/* Current Progress */}
+                                    <div 
+                                        className={`h-full rounded-full transition-all duration-100 ease-linear shadow-[0_0_12px_rgba(255,255,255,0.3)] relative z-10 ${isLocked ? 'bg-amber-500' : 'bg-zinc-100'}`}
                                         style={{ width: `${progress}%` }}
                                     ></div>
+                                </div>
+                                <div className="flex justify-between text-[10px] text-zinc-600 font-bold uppercase">
+                                    <span>0:00</span>
+                                    <span>{isLocked ? '이미 시청한 구간까지만 자유 이동이 가능합니다' : '자유로운 탐색이 가능합니다'}</span>
+                                    <span>{formatTime(duration)}</span>
                                 </div>
                             </div>
                         </div>
