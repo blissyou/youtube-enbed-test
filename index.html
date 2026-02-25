@@ -38,8 +38,9 @@
 
             const playerRef = useRef(null); 
             const intervalRef = useRef(null);
-            const maxTimeRef = useRef(0); // 시청 완료한 최대 지점 (기준점)
+            const maxTimeRef = useRef(0);
             const isSeekingRef = useRef(false);
+            const lastLogTimeRef = useRef(0); // 로그 출력 제한용 Ref
 
             // 로그 추가 함수
             const addLog = useCallback((message, time = null) => {
@@ -141,40 +142,57 @@
             useEffect(() => {
                 const interval = setInterval(() => {
                     const p = playerRef.current;
-                    if (p && typeof p.getCurrentTime === 'function' && p.getPlayerState() !== -1) {
-                        const cur = p.getCurrentTime();
-                        const dur = p.getDuration();
-                        
-                        // 전진 방지 핵심 로직 (시청 완료 구간 내 이동은 허용)
-                        if (isLocked && !isSeekingRef.current) {
-                            // 현재 위치가 기록된 최대 시청 지점보다 1.5초 이상 앞서면 (미시청 구간 점프)
-                            if (cur > maxTimeRef.current + 1.5) {
-                                p.seekTo(maxTimeRef.current, true);
-                                if (!window._lastLogTime || Date.now() - window._lastLogTime > 1000) {
-                                    addLog(`미시청 구간 차단: ${formatTime(maxTimeRef.current)}까지 시청함`);
-                                    window._lastLogTime = Date.now();
-                                }
-                            } else {
-                                // 정상 재생 중이거나 시청 완료 구간 내에서의 이동이면 maxTime 업데이트
-                                if (cur > maxTimeRef.current) {
-                                    maxTimeRef.current = cur;
-                                }
-                            }
-                        } else if (!isLocked) {
-                            // 잠금이 아닐 때는 항상 현재 위치를 최대 시점으로 업데이트
-                            maxTimeRef.current = cur;
-                        }
-
-                        setCurrentTime(cur);
-                        setDuration(dur);
-                        if (dur > 0) {
-                            setProgress((cur / dur) * 100);
-                        }
+                    
+                    // Guard: 플레이어가 준비되지 않았거나 API 사용 불가 시 중단
+                    if (!p || typeof p.getCurrentTime !== 'function' || p.getPlayerState() === -1) {
+                        return;
                     }
+
+                    const cur = p.getCurrentTime();
+                    const dur = p.getDuration();
+                    
+                    // 1. 잠금 모드가 아닐 때: 항상 최대 시점 갱신 및 상태 업데이트
+                    if (!isLocked) {
+                        maxTimeRef.current = cur;
+                        updateState(cur, dur);
+                        return;
+                    }
+
+                    // 2. 잠금 모드일 때: 수동 이동 중이면 로직 건너뜀
+                    if (isSeekingRef.current) {
+                        updateState(cur, dur);
+                        return;
+                    }
+
+                    // 3. 잠금 모드 조작 감지: 미시청 구간 점프 시 차단
+                    if (cur > maxTimeRef.current + 1.5) {
+                        p.seekTo(maxTimeRef.current, true);
+                        logThrottled(`미시청 구간 차단: ${formatTime(maxTimeRef.current)}까지 시청함`);
+                    } else if (cur > maxTimeRef.current) {
+                        // 정상 재생 시 최대 지점 갱신
+                        maxTimeRef.current = cur;
+                    }
+
+                    updateState(cur, dur);
                 }, 100);
 
                 return () => clearInterval(interval);
-            }, [isLocked]); 
+            }, [isLocked]);
+
+            // 보조 유틸리티 함수들 (Nesting 감소를 위해 분리)
+            const updateState = (cur, dur) => {
+                setCurrentTime(cur);
+                setDuration(dur);
+                if (dur > 0) setProgress((cur / dur) * 100);
+            };
+
+            const logThrottled = (message) => {
+                const now = Date.now();
+                if (now - lastLogTimeRef.current > 1000) {
+                    addLog(message);
+                    lastLogTimeRef.current = now;
+                }
+            };
 
             const extractVideoId = (input) => {
                 const regex = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/;
@@ -242,24 +260,25 @@
                         </div>
                         
                         <div className="flex flex-wrap items-center gap-4 w-full md:w-auto">
-                            {/* Lock Toggle */}
-                            <div className={`flex items-center space-x-2 border rounded-xl px-4 py-2 shadow-2xl transition-colors ${isLocked ? 'bg-amber-950/20 border-amber-900/50' : 'bg-zinc-900 border-zinc-800'}`}>
-                                <input 
-                                    type="checkbox" 
-                                    id="lockTimeline"
-                                    checked={isLocked}
-                                    onChange={(e) => {
-                                        setIsLocked(e.target.checked);
-                                        if (e.target.checked && player) {
-                                            // 잠금 활성화 시 현재 재생 시점을 최대 시청 지점으로 설정
-                                            maxTimeRef.current = Math.max(maxTimeRef.current, player.getCurrentTime());
-                                        }
-                                        addLog(`시청 구간 잠금: ${e.target.checked ? '활성화' : '비활성화'}`);
-                                    }}
-                                    className="w-4 h-4 rounded border-zinc-700 bg-zinc-800 text-amber-600 focus:ring-amber-500 focus:ring-offset-zinc-900 cursor-pointer"
-                                />
-                                <label htmlFor="lockTimeline" className={`text-sm font-bold cursor-pointer select-none ${isLocked ? 'text-amber-400' : 'text-zinc-300'}`}>
-                                    {isLocked ? '미시청 구간 스킵 금지' : '전진 방지 활성화'}
+                            {/* Lock Toggle - 강조된 버전 */}
+                            <div className={`flex items-center space-x-3 border-2 rounded-xl px-5 py-2.5 shadow-2xl transition-all duration-300 ${isLocked ? 'bg-amber-900/30 border-amber-500 animate-pulse-slow' : 'bg-zinc-900 border-zinc-700 hover:border-zinc-500'}`}>
+                                <div className="relative flex items-center">
+                                    <input 
+                                        type="checkbox" 
+                                        id="lockTimeline"
+                                        checked={isLocked}
+                                        onChange={(e) => {
+                                            setIsLocked(e.target.checked);
+                                            if (e.target.checked && player) {
+                                                maxTimeRef.current = Math.max(maxTimeRef.current, player.getCurrentTime());
+                                            }
+                                            addLog(`전진 방지: ${e.target.checked ? '활성화' : '비활성화'}`);
+                                        }}
+                                        className="w-5 h-5 rounded border-zinc-600 bg-zinc-800 text-amber-500 focus:ring-amber-500 cursor-pointer transition-transform active:scale-90"
+                                    />
+                                </div>
+                                <label htmlFor="lockTimeline" className={`text-sm font-black cursor-pointer select-none tracking-tight ${isLocked ? 'text-amber-400' : 'text-zinc-400'}`}>
+                                    {isLocked ? '🔒 전진 스킵 금지됨' : '🔓 전진 방지 활성화'}
                                 </label>
                             </div>
 
